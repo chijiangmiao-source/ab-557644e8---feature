@@ -1,5 +1,5 @@
 // app.js — 规程录入与回放页面逻辑（零依赖原生 ESM）
-import { replay, validateModel, LIMITS } from '/engine/engine.js';
+import { replay, replayWhatIf, validateModel, LIMITS } from '/engine/engine.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -355,6 +355,36 @@ function setVerdict(result) {
 
 /* ---------------- 交互 ---------------- */
 
+let lastBaseline = null; // { model, seq }：最近一次成功回放，作为预演基线
+
+function clearWhatIfResult() {
+  $('#whatif-result').innerHTML = '';
+  const errBox = $('#whatif-errors');
+  errBox.classList.add('hidden');
+  errBox.innerHTML = '';
+}
+
+function clearWhatIf() {
+  clearWhatIfResult();
+  $('#whatif-event').value = '';
+  $('#whatif-panel').classList.add('hidden');
+  lastBaseline = null;
+}
+
+function setupWhatIf(model, seq) {
+  const sel = $('#whatif-index');
+  sel.innerHTML = seq
+    .map((ev, i) => `<option value="${i}">#${i + 1} · ${escapeHtml(ev)}</option>`)
+    .join('');
+  $('#whatif-event-options').innerHTML = (model.events || [])
+    .map((e) => `<option value="${escapeAttr(e)}"></option>`)
+    .join('');
+  $('#whatif-event').value = '';
+  $('#whatif-result').innerHTML = '';
+  $('#whatif-errors').classList.add('hidden');
+  $('#whatif-panel').classList.remove('hidden');
+}
+
 function runReplay() {
   const model = buildModel();
   const seqText = $('#event-sequence').value;
@@ -369,6 +399,136 @@ function runReplay() {
   renderErrors(result);
   renderInitial(result, model);
   renderTimeline(result, model);
+
+  // 再次完成普通回放：清除旧对照结果；仅成功回放可作为预演基线
+  clearWhatIf();
+  if (result.ok && seq.length > 0) {
+    lastBaseline = { model, seq };
+    setupWhatIf(model, seq);
+  }
+}
+
+/* ---------------- 单处替换预演渲染 ---------------- */
+
+function whatIfSideHtml(sideLabel, step, model, rejected) {
+  const label = nameOf(model);
+  if (!step) {
+    return `<div class="cmp-side missing"><div class="cmp-side-head">${sideLabel}</div>
+      <div class="kv">— 此步不存在（该轨迹已提前终止，不构造后续步骤）—</div></div>`;
+  }
+  const candPills = (step.candidates || [])
+    .map((c) => {
+      const picked = (step.selected || []).includes(c.transitionId);
+      return `<span class="pill ${picked ? 'selected' : ''}">${c.transitionId} · 优先级 ${c.priority}</span>`;
+    })
+    .join('') || '<span class="kv">无候选迁移</span>';
+  const selected = (step.selected || [])
+    .map((t) => `<span class="pill selected">${t}</span>`)
+    .join('') || '<span class="kv">无</span>';
+  const regionRows = (step.regions || [])
+    .map((r) => {
+      const leaves = (r.activeLeafIds || []).map(label).join('，') || '—';
+      return `<div class="region-row"><span>${escapeHtml(r.regionName || r.regionId)}</span>
+        <span>${label(r.activeStateId)} <span class="kv">叶：${leaves}</span></span></div>`;
+    })
+    .join('') || '<span class="kv">—</span>';
+  const rejectBlock = rejected
+    ? `<div class="cmp-reject">拒绝：[${escapeHtml(rejected.code)}] ${escapeHtml(rejected.message || '')}</div>`
+    : '';
+  return `<div class="cmp-side ${rejected ? 'is-rejected' : ''}">
+    <div class="cmp-side-head">${sideLabel} · 事件 ${escapeHtml(step.event)}</div>
+    ${rejectBlock}
+    <div class="block-title">候选迁移</div><div>${candPills}</div>
+    <div class="block-title">选中迁移</div><div>${selected}</div>
+    <div class="block-title">区域活动叶</div>${regionRows}
+  </div>`;
+}
+
+const STATUS_LABEL = {
+  'identical-before': ['一致（替换点前）', 'cmp-tag same-before'],
+  identical: ['一致', 'cmp-tag same'],
+  diverged: ['配置分歧', 'cmp-tag diff'],
+  rejected: ['该侧拒绝·对照终止', 'cmp-tag reject'],
+  unreachable: ['后续不存在', 'cmp-tag none']
+};
+
+function renderWhatIf(result, model) {
+  const box = $('#whatif-result');
+  const errBox = $('#whatif-errors');
+  errBox.classList.add('hidden');
+  if (!result.ok) {
+    box.innerHTML = '';
+    let detail;
+    if (result.stage === 'VALIDATION') {
+      detail = result.errors.map((e) => `[${e.code}] ${escapeHtml(e.message)}`).join('；');
+    } else {
+      const loc = result.eventIndex != null ? `事件 #${result.eventIndex + 1} “${escapeHtml(result.event ?? '')}”：` : '';
+      detail = `${loc}[${result.code || result.stage}] ${escapeHtml(result.message || '')}`;
+    }
+    errBox.classList.remove('hidden');
+    errBox.innerHTML = `<h4>预演无法建立</h4><div>${detail}</div>`;
+    return;
+  }
+
+  const cmp = result.comparison;
+  const rep = result.replacement;
+  let banner;
+  if (cmp.termination) {
+    const t = cmp.termination;
+    const cc = cmp.counterpartConfig;
+    const label = nameOf(model);
+    const otherCfg = cc
+      ? `另一侧（基线）同事件 #${cc.eventIndex + 1} “${escapeHtml(cc.event)}” 的对应配置活动叶：${
+          cc.leaves.map(label).join('，')
+        }`
+      : '另一侧在该事件亦无成功配置。';
+    banner = `<div class="cmp-banner reject">
+      替代轨迹在事件 #${t.eventIndex + 1} “${escapeHtml(result.alternativeSequence[t.eventIndex])}”
+      被拒绝（${escapeHtml(t.code)}），对照在此首个失败事件终止，后续步骤不予构造。<br />
+      <span class="kv">${otherCfg}</span></div>`;
+  } else if (cmp.diverged) {
+    const d = cmp.divergenceIndex;
+    banner = `<div class="cmp-banner diff">首个稳定配置分歧：事件 #${d + 1}
+      “${escapeHtml(result.alternativeSequence[d])}”（替换点 #${rep.eventIndex + 1}
+      ${escapeHtml(rep.originalEvent)} → ${escapeHtml(rep.replacementEvent)}）。
+      替换点之前两侧逐序号一致。</div>`;
+  } else {
+    banner = `<div class="cmp-banner same">替换未改变任何稳定配置：两条轨迹 ${cmp.rows.length} 个事件逐序号一致。</div>`;
+  }
+
+  const rowsHtml = cmp.rows
+    .map((row) => {
+      const [tagText, tagClass] = STATUS_LABEL[row.status] || ['', ''];
+      const altRejected =
+        row.status === 'rejected' && cmp.termination
+          ? { code: cmp.termination.code, message: cmp.termination.message }
+          : null;
+      const altMissing = row.status === 'unreachable';
+      const mark = row.replaced ? '<span class="rep-mark">替换点</span>' : '';
+      return `<div class="cmp-row ${row.divergencePoint ? 'is-divergence' : ''}">
+        <div class="cmp-row-head">
+          <span class="cmp-idx">#${row.eventIndex + 1}</span>
+          ${mark}
+          <span class="cmp-tag ${tagClass}">${tagText}</span>
+        </div>
+        <div class="cmp-grid">
+          ${whatIfSideHtml('基线', row.baseline, model, null)}
+          ${whatIfSideHtml('替代', altMissing ? null : row.alternative, model, altRejected)}
+        </div>
+      </div>`;
+    })
+    .join('');
+
+  box.innerHTML = `${banner}<div class="cmp-rows">${rowsHtml}</div>`;
+}
+
+function runWhatIf() {
+  if (!lastBaseline) return;
+  const idx = Number.parseInt($('#whatif-index').value, 10);
+  const replacement = $('#whatif-event').value.trim();
+  // 与 /api/whatif 同一引擎实现：接口结果与浏览器逐字段一致
+  const result = replayWhatIf(lastBaseline.model, lastBaseline.seq, idx, replacement);
+  renderWhatIf(result, lastBaseline.model);
 }
 
 function renderAll() {
@@ -406,6 +566,8 @@ document.addEventListener('click', (e) => {
 });
 
 $('#btn-replay').addEventListener('click', runReplay);
+$('#btn-whatif-run').addEventListener('click', runWhatIf);
+$('#btn-whatif-cancel').addEventListener('click', clearWhatIf);
 $('#btn-validate').addEventListener('click', () => {
   const v = validateModel(buildModel());
   const result = v.ok

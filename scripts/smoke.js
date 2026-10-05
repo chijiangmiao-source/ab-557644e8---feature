@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -143,6 +143,59 @@ async function main() {
     check(
       '跨越并行区域边界目标被拒绝',
       crossBody.ok === false && crossBody.code === 'CROSS_REGION_TARGET' && crossBody.eventIndex === 0
+    );
+
+    // 单处替换预演：FIRE -> RESET 必须在首步出现稳定配置分歧
+    const whatif = await fetch(`${base}/api/whatif`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, events: ['FIRE', 'RESET'], eventIndex: 0, replacementEvent: 'RESET' })
+    });
+    const whatifBody = await whatif.json();
+    check(
+      'POST /api/whatif 成功且基线/替代序列正确',
+      whatifBody.ok === true &&
+        whatifBody.alternativeSequence.join() === 'RESET,RESET' &&
+        whatifBody.replacement.originalEvent === 'FIRE'
+    );
+    check(
+      'FIRE 替换为 RESET：首个分歧在事件 #1',
+      whatifBody.ok &&
+        whatifBody.comparison.diverged === true &&
+        whatifBody.comparison.divergenceIndex === 0 &&
+        whatifBody.comparison.rows[0].divergencePoint === true &&
+        whatifBody.comparison.rows[0].baseline.configAfter.slice().sort().join() === 'A_ON_READY,B_RELEASED' &&
+        whatifBody.comparison.rows[0].alternative.configAfter.slice().sort().join() === 'A_OFF,B_LOCKED'
+    );
+    check(
+      '预演保留基线证据（基线两事件均成功）',
+      whatifBody.ok &&
+        whatifBody.baseline.ok === true &&
+        whatifBody.baseline.evidence.length === 2
+    );
+
+    // 接口结果须与引擎（浏览器同源模块）逐字段一致
+    const localEngine = await import(pathToFileURL(path.join(root, 'dist', 'engine', 'engine.js')).href);
+    const localWhatIf = localEngine.replayWhatIf(model, ['FIRE', 'RESET'], 0, 'RESET');
+    check(
+      '/api/whatif 与浏览器引擎逐字段一致（JSON 相等）',
+      JSON.stringify(whatifBody) === JSON.stringify(localWhatIf),
+      'API 与引擎输出不一致'
+    );
+
+    // 未声明替代事件：定位替换位置且不改写基线证据
+    const unknownWhatIf = await fetch(`${base}/api/whatif`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, events: ['FIRE', 'RESET'], eventIndex: 1, replacementEvent: 'NOPE' })
+    });
+    const unknownBody = await unknownWhatIf.json();
+    check(
+      '未声明替代事件：UNKNOWN_EVENT 定位到替换位置且基线保留',
+      unknownBody.ok === false &&
+        unknownBody.code === 'UNKNOWN_EVENT' &&
+        unknownBody.eventIndex === 1 &&
+        unknownBody.baseline.ok === true
     );
   } catch (e) {
     failures++;

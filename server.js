@@ -4,7 +4,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { replay, validateModel } from './src/engine/engine.js';
+import { replay, replayWhatIf, validateModel } from './src/engine/engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || process.env.HOST_PORT || 8080);
@@ -119,6 +119,13 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/replay' && req.method === 'POST') {
       const body = JSON.parse(await readBody(req) || '{}');
       const result = replay(body.model ?? {}, Array.isArray(body.events) ? body.events : []);
+      return sendJson(res, 200, result);
+    }
+
+    if (url.pathname === '/api/whatif' && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const events = Array.isArray(body.events) ? body.events : [];
+      const result = replayWhatIf(body.model ?? {}, events, body.eventIndex, body.replacementEvent);
       return sendJson(res, 200, result);
     }
 

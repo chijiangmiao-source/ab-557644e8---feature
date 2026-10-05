@@ -91,3 +91,36 @@ button.secondary { background: transparent; }
 .tag { font-size: 10px; border-radius: 4px; padding: 0 6px; }
 .tag.sel { background: rgba(79,140,255,.25); color: #bcd2ff; }
 .tag.preempt { background: rgba(255,176,32,.18); color: var(--warn); }
+
+/* 单处替换预演 */
+.whatif { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.whatif-hint { margin: 6px 0 10px; line-height: 1.6; }
+.whatif-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.whatif-controls label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 11px; }
+.whatif-controls select, .whatif-controls input {
+  background: var(--bg); border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; min-width: 150px;
+}
+.cmp-banner { border-radius: 8px; padding: 9px 11px; margin: 10px 0; line-height: 1.6; }
+.cmp-banner.diff { background: rgba(255,176,32,.12); border: 1px solid var(--warn); }
+.cmp-banner.reject { background: rgba(255,93,93,.12); border: 1px solid var(--bad); }
+.cmp-banner.same { background: rgba(56,193,114,.12); border: 1px solid var(--ok); }
+.cmp-rows { display: flex; flex-direction: column; gap: 8px; }
+.cmp-row { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--bg); }
+.cmp-row.is-divergence { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn) inset; }
+.cmp-row-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.cmp-idx { font-weight: 600; }
+.rep-mark { font-size: 10px; border-radius: 4px; padding: 0 6px; background: rgba(79,140,255,.25); color: #bcd2ff; }
+.cmp-tag { font-size: 10px; border-radius: 4px; padding: 1px 7px; border: 1px solid var(--line); color: var(--muted); }
+.cmp-tag.same-before { color: var(--ok); border-color: var(--ok); }
+.cmp-tag.same { color: var(--ok); border-color: var(--ok); }
+.cmp-tag.diff { color: var(--warn); border-color: var(--warn); }
+.cmp-tag.reject { color: var(--bad); border-color: var(--bad); }
+.cmp-tag.none { color: var(--muted); }
+.cmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 700px) { .cmp-grid { grid-template-columns: 1fr; } }
+.cmp-side { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; background: var(--panel-2); }
+.cmp-side.is-rejected { border-color: var(--bad); }
+.cmp-side.missing { border-style: dashed; }
+.cmp-side-head { font-weight: 600; margin-bottom: 4px; }
+.cmp-reject { color: var(--bad); font-size: 11px; margin: 4px 0; }

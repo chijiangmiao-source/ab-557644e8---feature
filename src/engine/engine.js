@@ -668,4 +668,177 @@ export function replay(model, eventSequence) {
   };
 }
 
-export { indexModel, regionSnapshot, statePath };
+/* ----------------------------- 单处替换预演（what-if 对照） ----------------------------- */
+
+function sameLeaves(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  return sa.every((id, i) => id === sb[i]);
+}
+
+// 在一段成功回放之上，仅替换 eventIndex 位置的事件，以同一模型重新执行，
+// 并将两条轨迹按事件序号对齐。纯函数：不修改模型与基线序列，原样保留基线证据。
+//
+// 返回：
+//   { ok:true, baseline, alternative, alternativeSequence,
+//     replacement: { eventIndex, originalEvent, replacementEvent },
+//     comparison: { diverged, divergenceIndex, termination, rejection,
+//                   counterpartConfig, rows: [...] } }
+// 行状态：identical-before（替换点前一致）/ identical（配置一致）/
+//         diverged（稳定配置分歧）/ rejected（该侧在此事件被拒绝，对照终止）/
+//         unreachable（终止侧不存在的后续步骤，绝不伪造成一致）
+function replayWhatIf(model, baseEventSequence, eventIndex, replacementEvent) {
+  // 1) 基线：与普通回放同一实现；预演只允许建立在成功回放之上
+  const baseline = replay(model, baseEventSequence);
+  if (!baseline.ok) {
+    if (baseline.stage === 'VALIDATION') {
+      return { ok: false, stage: 'VALIDATION', errors: baseline.errors, baseline };
+    }
+    return {
+      ok: false,
+      stage: 'BASELINE',
+      code: baseline.code,
+      eventIndex: baseline.eventIndex,
+      event: baseline.event,
+      message: `基线回放未成功完成，无法建立对照：${baseline.message || ''}`,
+      baseline
+    };
+  }
+
+  // 2) 定位替换位置（不改写任何基线证据）
+  const seq = Array.isArray(baseEventSequence) ? baseEventSequence : [];
+  if (!Number.isInteger(eventIndex) || eventIndex < 0 || eventIndex >= seq.length) {
+    return {
+      ok: false,
+      stage: 'INPUT',
+      code: 'REPLACE_INDEX',
+      eventIndex: Number.isInteger(eventIndex) ? eventIndex : null,
+      message: `替换位置必须是 0..${seq.length - 1} 之间的事件序号（收到 ${eventIndex}）`,
+      baseline
+    };
+  }
+  if (typeof replacementEvent !== 'string' || !replacementEvent.trim()) {
+    return {
+      ok: false,
+      stage: 'INPUT',
+      code: 'REPLACE_EVENT',
+      eventIndex,
+      message: '替代事件必须是非空事件名',
+      baseline
+    };
+  }
+
+  const originalEvent = seq[eventIndex];
+  const replacement = { eventIndex, originalEvent, replacementEvent };
+
+  // 3) 替代事件未声明：定位替换位置并原样返回基线证据
+  if (!((model.events || []).includes(replacementEvent))) {
+    return {
+      ok: false,
+      stage: 'REPLAY',
+      code: 'UNKNOWN_EVENT',
+      eventIndex,
+      event: replacementEvent,
+      message: `第 ${eventIndex + 1} 个事件的替代值 ${replacementEvent} 未在事件表中声明（仅定位替换位置，基线证据保持不变）`,
+      replacement,
+      baseline
+    };
+  }
+
+  // 4) 以同一模型、仅替换该位置的事件重新执行
+  const alternativeSequence = seq.map((e, i) => (i === eventIndex ? replacementEvent : e));
+  const alternative = replay(model, alternativeSequence);
+
+  // 5) 找首个分歧：拒绝结论分歧 或 稳定配置分歧
+  let divergenceIndex = null;
+  let termination = null; // { side:'alternative', eventIndex, code, message }
+  if (!alternative.ok) {
+    divergenceIndex = alternative.eventIndex;
+    termination = {
+      side: 'alternative',
+      eventIndex: alternative.eventIndex,
+      code: alternative.code,
+      message: alternative.message
+    };
+  } else {
+    for (let i = 0; i < seq.length; i++) {
+      const b = baseline.evidence[i];
+      const a = alternative.evidence[i];
+      if (!a || !b || !sameLeaves(a.configAfter, b.configAfter)) {
+        divergenceIndex = i;
+        break;
+      }
+    }
+  }
+
+  // 6) 逐序号对齐
+  const rows = [];
+  for (let i = 0; i < seq.length; i++) {
+    const bStep = baseline.evidence[i] || null;
+    const aStep = alternative.evidence[i] || null;
+    const equalNow = !!(bStep && aStep && bStep.ok && aStep.ok && sameLeaves(bStep.configAfter, aStep.configAfter));
+    let status;
+    if (termination && i > termination.eventIndex) {
+      status = 'unreachable'; // 替代侧已终止：不存在的后续步骤不得伪造
+    } else if (termination && i === termination.eventIndex) {
+      status = 'rejected';
+    } else if (i < eventIndex) {
+      status = 'identical-before'; // 替换点前一致
+    } else {
+      status = equalNow ? 'identical' : 'diverged';
+    }
+    rows.push({
+      eventIndex: i,
+      baselineEvent: seq[i],
+      alternativeEvent: alternativeSequence[i],
+      replaced: i === eventIndex,
+      status,
+      divergencePoint: i === divergenceIndex,
+      configEqual: !termination && equalNow,
+      baseline: bStep,
+      alternative: aStep
+    });
+  }
+
+  // 拒绝侧的错误码 + 另一侧（基线）在同一事件的对应配置
+  let rejection = null;
+  let counterpartConfig = null;
+  if (termination) {
+    const other = termination.side === 'alternative' ? baseline.evidence[termination.eventIndex] : null;
+    rejection = {
+      side: termination.side,
+      eventIndex: termination.eventIndex,
+      code: termination.code,
+      message: termination.message,
+      rejectedEvent: alternativeSequence[termination.eventIndex]
+    };
+    if (other && other.ok) {
+      counterpartConfig = {
+        side: 'baseline',
+        eventIndex: other.eventIndex,
+        event: other.event,
+        leaves: other.configAfter,
+        regions: other.regions
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    baseline,
+    alternative,
+    alternativeSequence,
+    replacement,
+    comparison: {
+      diverged: divergenceIndex != null,
+      divergenceIndex,
+      termination,
+      rejection,
+      counterpartConfig,
+      rows
+    }
+  };
+}
+
+export { indexModel, regionSnapshot, statePath, replayWhatIf };

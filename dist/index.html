@@ -75,6 +75,27 @@
       <div id="errors" class="errors hidden"></div>
       <div id="initial-config" class="initial-config"></div>
       <div id="timeline" class="timeline"></div>
+
+      <div id="whatif-panel" class="whatif hidden">
+        <div class="panel-head"><h2>单处替换预演</h2></div>
+        <p class="kv whatif-hint">
+          基线为上方一次<strong>成功</strong>回放。仅替换选定位置的一个事件并以同一模型重新执行；
+          两条轨迹按事件序号对齐，定位首个稳定配置或拒绝结论分歧。局部切换对后续并行区域的影响会在此暴露。
+        </p>
+        <div class="whatif-controls">
+          <label>替换位置
+            <select id="whatif-index"></select>
+          </label>
+          <label>替代事件
+            <input id="whatif-event" type="text" list="whatif-event-options" placeholder="输入替代事件名" spellcheck="false" />
+            <datalist id="whatif-event-options"></datalist>
+          </label>
+          <button id="btn-whatif-run" type="button" class="primary">预演</button>
+          <button id="btn-whatif-cancel" type="button" class="secondary">取消预演</button>
+        </div>
+        <div id="whatif-errors" class="errors hidden"></div>
+        <div id="whatif-result"></div>
+      </div>
     </section>
   </main>
 
