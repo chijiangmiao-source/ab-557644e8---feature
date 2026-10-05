@@ -75,6 +75,19 @@
       <div id="errors" class="errors hidden"></div>
       <div id="initial-config" class="initial-config"></div>
       <div id="timeline" class="timeline"></div>
+
+      <div id="preview-editor" class="preview-editor hidden">
+        <h4>替换预演（保留原序列与回放证据，仅替换一处并以同一模型重新执行）</h4>
+        <div class="seq-row">
+          <select id="preview-index" title="选择要替换的事件序号"></select>
+          <input id="preview-event" type="text" list="event-datalist" placeholder="替代事件，例如 RESET" spellcheck="false" />
+          <datalist id="event-datalist"></datalist>
+          <button id="btn-preview-run" type="button" class="primary">预演此处改动</button>
+          <button id="btn-preview-cancel" type="button" class="secondary">取消预演</button>
+        </div>
+        <div id="preview-errors" class="errors hidden"></div>
+      </div>
+      <div id="preview-result" class="preview-result"></div>
     </section>
   </main>
 

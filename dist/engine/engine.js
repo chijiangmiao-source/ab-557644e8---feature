@@ -668,4 +668,173 @@ export function replay(model, eventSequence) {
   };
 }
 
+/* --------------------- 替换预演（What-if 对照） --------------------- */
+
+// 对照行单侧的紧凑视图：候选、选中迁移、各区域活动叶（拒绝时给出错误码）
+function compactCandidates(candidates) {
+  return (candidates || []).map((c) => ({
+    transitionId: c.transitionId,
+    sourceId: c.sourceId,
+    targetId: c.targetId,
+    priority: c.priority
+  }));
+}
+
+function compactRegions(regions) {
+  return (regions || []).map((r) => ({
+    regionId: r.regionId,
+    regionName: r.regionName,
+    activeStateId: r.activeStateId,
+    activeLeafIds: [...(r.activeLeafIds || [])].sort()
+  }));
+}
+
+function acceptedSide(step) {
+  return {
+    ok: true,
+    event: step.event,
+    candidates: compactCandidates(step.candidates),
+    selected: [...(step.selected || [])],
+    regions: compactRegions(step.regions)
+  };
+}
+
+function rejectedSide(data) {
+  // data 可以是 step 裁决拒绝对象（带候选）或回放顶层拒绝（如 UNKNOWN_EVENT，无候选）
+  return {
+    ok: false,
+    event: data.event,
+    code: data.code,
+    message: data.message,
+    candidates: compactCandidates(data.candidates),
+    regions: []
+  };
+}
+
+// 取某侧轨迹在事件 i 的对照视图；该侧已终止且不存在第 i 步时返回 null
+function sideAtIndex(result, i) {
+  const ev = result.evidence || [];
+  if (i < ev.length) {
+    const s = ev[i];
+    return s.ok === false ? rejectedSide(s) : acceptedSide(s);
+  }
+  if (!result.ok && result.eventIndex === i) return rejectedSide(result);
+  return null;
+}
+
+// 稳定配置签名：每区域活动叶集合；拒绝结论以错误码表示
+function sideSignature(side) {
+  if (!side.ok) return `REJECT:${side.code}`;
+  return JSON.stringify(side.regions.map((r) => [r.regionId, r.activeLeafIds]));
+}
+
+const selectedKey = (side) => JSON.stringify([...(side.selected || [])].sort());
+
+/**
+ * 替换预演：保留原事件序列及其回放证据，仅替换指定位置的事件，以同一模型重新执行，
+ * 再将两条轨迹按事件序号逐位对齐。
+ *
+ * 返回 {
+ *   ok, stage:'PREVIEW',
+ *   replacement: { eventIndex, from, to },
+ *   baselineSequence, replacedSequence,
+ *   baseline, preview,            // 两侧完整 replay() 结果（基线证据不被改写）
+ *   comparison: {
+ *     sequenceLength, firstDivergenceIndex, prefixIdentical,
+ *     terminatedReason: 'COMPLETED'|'BASELINE_REJECTED'|'PREVIEW_REJECTED'|'BOTH_REJECTED',
+ *     terminalEventIndex,
+ *     rows: [{ eventIndex, beforeSubstitution, atSubstitution,
+ *              baselineEvent, previewEvent, baseline, preview,
+ *              sameConfiguration, sameSelection, equal, divergence }]
+ *   }
+ * }
+ */
+export function previewSubstitution(model, eventSequence, eventIndex, replacementEvent) {
+  const v = validateModel(model);
+  if (!v.ok) return { ok: false, stage: 'VALIDATION', errors: v.errors, evidence: [] };
+
+  const inputError = (message) => ({
+    ok: false,
+    stage: 'INPUT',
+    errors: [{ code: 'INPUT', message }],
+    evidence: []
+  });
+  if (!Array.isArray(eventSequence)) return inputError('事件序列必须是数组');
+  if (!Number.isInteger(eventIndex) || eventIndex < 0 || eventIndex >= eventSequence.length) {
+    return inputError('替换位置必须是序列内的事件序号（从 0 开始）');
+  }
+  if (typeof replacementEvent !== 'string' || !replacementEvent.trim()) {
+    return inputError('替代事件必须是非空事件名');
+  }
+
+  const from = eventSequence[eventIndex];
+  const replacedSequence = eventSequence.map((e, i) => (i === eventIndex ? replacementEvent : e));
+
+  // 基线始终用原序列重放，原证据随 baseline 原样保留、不被改写；
+  // 即便基线已先被拒绝，对照也在其首个失败事件终止（UI 仅在成功回放后允许发起预演）。
+  const baseline = replay(model, eventSequence);
+  const preview = replay(model, replacedSequence);
+
+  const length = eventSequence.length;
+  const bFail = baseline.ok ? null : baseline.eventIndex;
+  const pFail = preview.ok ? null : preview.eventIndex;
+  let terminal = length - 1;
+  let terminatedReason = 'COMPLETED';
+  if (bFail != null || pFail != null) {
+    // 任一侧先被拒绝：对照在该首个失败事件终止，后续不存在的步骤不伪造为一致
+    terminal = Math.min(bFail ?? Infinity, pFail ?? Infinity);
+    if (bFail === terminal && pFail === terminal) terminatedReason = 'BOTH_REJECTED';
+    else if (bFail === terminal) terminatedReason = 'BASELINE_REJECTED';
+    else terminatedReason = 'PREVIEW_REJECTED';
+  }
+
+  const rows = [];
+  let firstDivergenceIndex = null;
+  let prefixIdentical = true;
+  for (let i = 0; i <= terminal; i++) {
+    const bSide = sideAtIndex(baseline, i);
+    const pSide = sideAtIndex(preview, i);
+    const bothAccepted = bSide.ok && pSide.ok;
+    const sameConfiguration = bothAccepted && sideSignature(bSide) === sideSignature(pSide);
+    const sameRejection = !bSide.ok && !pSide.ok && bSide.code === pSide.code;
+    const equal = sameConfiguration || sameRejection;
+    let divergence = null;
+    if (!equal) divergence = bothAccepted ? 'CONFIG' : 'REJECTION';
+    if (!equal && firstDivergenceIndex === null) firstDivergenceIndex = i;
+    if (i < eventIndex && !equal) prefixIdentical = false;
+    rows.push({
+      eventIndex: i,
+      beforeSubstitution: i < eventIndex,
+      atSubstitution: i === eventIndex,
+      afterSubstitution: i > eventIndex,
+      baselineEvent: eventSequence[i],
+      previewEvent: replacedSequence[i],
+      baseline: bSide,
+      preview: pSide,
+      sameConfiguration,
+      sameSelection: bothAccepted && selectedKey(bSide) === selectedKey(pSide),
+      equal,
+      divergence
+    });
+  }
+
+  return {
+    ok: true,
+    stage: 'PREVIEW',
+    replacement: { eventIndex, from, to: replacementEvent },
+    baselineSequence: [...eventSequence],
+    replacedSequence,
+    baseline,
+    preview,
+    comparison: {
+      sequenceLength: length,
+      firstDivergenceIndex,
+      prefixIdentical,
+      terminatedReason,
+      terminalEventIndex: terminatedReason === 'COMPLETED' ? null : terminal,
+      rows
+    }
+  };
+}
+
 export { indexModel, regionSnapshot, statePath };

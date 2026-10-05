@@ -91,3 +91,45 @@ button.secondary { background: transparent; }
 .tag { font-size: 10px; border-radius: 4px; padding: 0 6px; }
 .tag.sel { background: rgba(79,140,255,.25); color: #bcd2ff; }
 .tag.preempt { background: rgba(255,176,32,.18); color: var(--warn); }
+.tag.reject { background: rgba(255,93,93,.2); color: var(--bad); }
+.tag.eq { background: rgba(56,193,114,.2); color: var(--ok); }
+.tag.replace { background: rgba(95,211,138,.2); color: var(--entry); }
+
+/* 替换预演 */
+.preview-editor {
+  margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px;
+}
+.preview-editor h4 { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+.preview-editor select {
+  background: var(--bg); border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px;
+}
+.preview-editor input {
+  flex: 1; background: var(--bg); border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 7px 10px;
+}
+.preview-result { margin-top: 12px; }
+.preview-result h4 { margin: 0 0 8px; font-size: 13px; }
+.cmp-summary {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px;
+}
+.cmp-row {
+  border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
+  margin-bottom: 8px; background: var(--panel);
+}
+.cmp-row.at-replace { border-color: var(--entry); }
+.cmp-row-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+.cmp-row-head .ev { font-weight: 600; }
+.cmp-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 700px) { .cmp-sides { grid-template-columns: 1fr; } }
+.cmp-side {
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--panel-2);
+}
+.cmp-side.reject { border-color: var(--bad); }
+.cmp-side-head { display: flex; gap: 6px; align-items: center; font-weight: 600; margin-bottom: 4px; }
+.reject-box {
+  margin-top: 6px; background: rgba(255,93,93,.1); border: 1px solid var(--bad);
+  border-radius: 6px; padding: 6px 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+.term-note { margin-top: 6px; color: var(--warn); }

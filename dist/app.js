@@ -1,5 +1,5 @@
 // app.js — 规程录入与回放页面逻辑（零依赖原生 ESM）
-import { replay, validateModel, LIMITS } from '/engine/engine.js';
+import { replay, validateModel, previewSubstitution, LIMITS } from '/engine/engine.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -26,6 +26,10 @@ const DEFAULT_MODEL = {
 };
 
 const state = structuredClone(DEFAULT_MODEL);
+
+// 最近一次普通回放的模型快照与序列（预演以同一模型重新执行）；previewResult 为旧对照结果
+let lastReplay = null;
+let previewResult = null;
 
 /* ---------------- 表格行渲染 ---------------- */
 
@@ -353,6 +357,164 @@ function setVerdict(result) {
   }
 }
 
+/* ---------------- 替换预演 ---------------- */
+
+function clearPreview(hideEditor = true) {
+  previewResult = null;
+  $('#preview-result').innerHTML = '';
+  $('#preview-errors').classList.add('hidden');
+  $('#preview-errors').innerHTML = '';
+  $('#preview-event').value = '';
+  if (hideEditor) $('#preview-editor').classList.add('hidden');
+}
+
+function renderPreviewErrors(result) {
+  const box = $('#preview-errors');
+  if (result.ok) {
+    box.classList.add('hidden');
+    return;
+  }
+  box.classList.remove('hidden');
+  let html = '<h4>预演无法执行</h4><ul>';
+  if (result.stage === 'VALIDATION') {
+    html += result.errors
+      .map((e) => `<li>[${e.code}] ${escapeHtml(e.message)}${e.ref ? ` <span class="loc">@ ${e.ref}</span>` : ''}</li>`)
+      .join('');
+  } else {
+    html += result.errors.map((e) => `<li>[${e.code}] ${escapeHtml(e.message)}</li>`).join('');
+  }
+  html += '</ul>';
+  box.innerHTML = html;
+}
+
+function previewSideHtml(label, side, model, terminatedHere) {
+  const name = nameOf(model);
+  if (!side.ok) {
+    const cands = (side.candidates || [])
+      .map((c) => `<span class="pill">${c.transitionId} · 优先级 ${c.priority}</span>`)
+      .join('') || '<span class="kv">无候选（事件未进入单步裁决）</span>';
+    return `
+      <div class="cmp-side reject">
+        <div class="cmp-side-head"><span class="tag reject">拒绝</span><span>${escapeHtml(label)}</span></div>
+        <div class="block-title">候选迁移</div><div>${cands}</div>
+        <div class="reject-box">
+          <span class="tag reject">${escapeHtml(side.code)}</span>
+          <span class="kv">${escapeHtml(side.message ?? '')}</span>
+        </div>
+        ${terminatedHere ? '<div class="kv term-note">该侧在此事件被拒绝，对照在此终止，不再比较后续步骤。</div>' : ''}
+      </div>`;
+  }
+  const candPills = (side.candidates || [])
+    .map((c) => {
+      const picked = (side.selected || []).includes(c.transitionId);
+      return `<span class="pill ${picked ? 'selected' : 'lost'}">${c.transitionId} · 优先级 ${c.priority}</span>`;
+    })
+    .join('') || '<span class="kv">无候选迁移（事件被忽略，配置不变）</span>';
+  const selected = (side.selected || []).map((t) => `<span class="pill selected">${t}</span>`).join('') ||
+    '<span class="kv">无（配置不变）</span>';
+  const regionRows = (side.regions || [])
+    .map(
+      (r) =>
+        `<div class="region-row"><span>${escapeHtml(r.regionName || r.regionId)}</span>
+           <span>${name(r.activeStateId)} <span class="kv">叶：${(r.activeLeafIds || []).map(name).join('，') || '—'}</span></span></div>`
+    )
+    .join('');
+  return `
+    <div class="cmp-side">
+      <div class="cmp-side-head"><span class="tag sel">接受</span><span>${escapeHtml(label)}</span></div>
+      <div class="block-title">候选迁移（活动状态或其祖先的匹配迁移）</div><div>${candPills}</div>
+      <div class="block-title">选中迁移</div><div>${selected}</div>
+      <div class="block-title">各区域活动状态 / 活动叶（稳定配置）</div>${regionRows}
+    </div>`;
+}
+
+function renderPreview(result, model) {
+  const box = $('#preview-result');
+  if (!result) {
+    box.innerHTML = '';
+    return;
+  }
+  if (!result.ok) {
+    box.innerHTML = '';
+    return;
+  }
+  const { comparison: cmp, replacement } = result;
+  const reasonText = {
+    COMPLETED: '两条轨迹均完整执行完毕。',
+    PREVIEW_REJECTED: `替换轨迹在事件 #${cmp.terminalEventIndex + 1} 被拒绝，对照在该首个失败事件终止。`,
+    BASELINE_REJECTED: `原轨迹在事件 #${cmp.terminalEventIndex + 1} 被拒绝，对照在该首个失败事件终止。`,
+    BOTH_REJECTED: `两条轨迹均在事件 #${cmp.terminalEventIndex + 1} 被拒绝，对照在该事件终止。`
+  }[cmp.terminatedReason];
+
+  const summary = `
+    <div class="cmp-summary">
+      <div>替换点：<b>#${replacement.eventIndex + 1}</b>
+        <span class="pill lost">${escapeHtml(replacement.from)}</span> →
+        <span class="pill selected">${escapeHtml(replacement.to)}</span>
+      </div>
+      <div class="kv">替换点前逐位一致：<b>${cmp.prefixIdentical ? '是' : '否'}</b>；
+        首个分歧：<b>${cmp.firstDivergenceIndex == null ? '无（全程一致）' : '#' + (cmp.firstDivergenceIndex + 1)}</b>；
+        ${escapeHtml(reasonText)}</div>
+    </div>`;
+
+  const rows = cmp.rows
+    .map((row) => {
+      const posTag = row.atSubstitution
+        ? '<span class="tag replace">替换点</span>'
+        : row.beforeSubstitution
+          ? '<span class="kv">替换点前</span>'
+          : '<span class="kv">替换点后</span>';
+      const eqTag = row.equal
+        ? '<span class="tag eq">一致</span>'
+        : `<span class="tag reject">${row.divergence === 'REJECTION' ? '拒绝分歧' : '配置分歧'}</span>`;
+      const termHere =
+        cmp.terminatedReason !== 'COMPLETED' && row.eventIndex === cmp.terminalEventIndex;
+      return `
+      <div class="cmp-row ${row.atSubstitution ? 'at-replace' : ''}">
+        <div class="cmp-row-head">
+          <span class="ev">#${row.eventIndex + 1}</span>${posTag}${eqTag}
+          <span class="kv">基线事件：${escapeHtml(row.baselineEvent)} ｜ 替换事件：${escapeHtml(row.previewEvent)}</span>
+        </div>
+        <div class="cmp-sides">
+          ${previewSideHtml('原轨迹（基线）', row.baseline, model, termHere && cmp.terminatedReason !== 'PREVIEW_REJECTED')}
+          ${previewSideHtml('替换轨迹', row.preview, model, termHere && cmp.terminatedReason !== 'BASELINE_REJECTED')}
+        </div>
+      </div>`;
+    })
+    .join('');
+
+  box.innerHTML = `<h4>逐事件对照（按事件序号对齐）</h4>${summary}${rows}`;
+}
+
+function setupPreviewEditor(model, seq) {
+  const editor = $('#preview-editor');
+  const sel = $('#preview-index');
+  sel.innerHTML = seq
+    .map((ev, i) => `<option value="${i}">#${i + 1} · ${escapeHtml(ev)}</option>`)
+    .join('');
+  $('#event-datalist').innerHTML = (model.events || [])
+    .map((e) => `<option value="${escapeAttr(e)}"></option>`)
+    .join('');
+  $('#preview-event').value = '';
+  editor.classList.remove('hidden');
+}
+
+function runPreview() {
+  if (!lastReplay || !lastReplay.result.ok) return;
+  const { model, seq } = lastReplay;
+  const eventIndex = Number.parseInt($('#preview-index').value, 10);
+  const replacementEvent = $('#preview-event').value.trim();
+  const result = previewSubstitution(model, seq, eventIndex, replacementEvent);
+  renderPreviewErrors(result);
+  if (result.ok) {
+    previewResult = result;
+    renderPreview(previewResult, model);
+  } else {
+    // 预演失败（如替代事件未声明）只在预演区报错：基线结果与证据保持原样、不被改写
+    $('#preview-result').innerHTML = '';
+  }
+}
+
 /* ---------------- 交互 ---------------- */
 
 function runReplay() {
@@ -363,12 +525,17 @@ function runReplay() {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // 再次完成普通回放：清除旧对照结果，原录入、校验与回放展示保持可用
+  clearPreview();
+
   // 先跑本地引擎（与 /api/replay 同一实现），保证页面可离线演示
   const result = replay(model, seq);
+  lastReplay = { model, seq, result };
   setVerdict(result);
   renderErrors(result);
   renderInitial(result, model);
   renderTimeline(result, model);
+  if (result.ok && seq.length > 0) setupPreviewEditor(model, seq);
 }
 
 function renderAll() {
@@ -406,6 +573,11 @@ document.addEventListener('click', (e) => {
 });
 
 $('#btn-replay').addEventListener('click', runReplay);
+$('#btn-preview-run').addEventListener('click', runPreview);
+$('#btn-preview-cancel').addEventListener('click', () => clearPreview(false));
+$('#preview-event').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') runPreview();
+});
 $('#btn-validate').addEventListener('click', () => {
   const v = validateModel(buildModel());
   const result = v.ok

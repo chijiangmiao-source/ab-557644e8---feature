@@ -144,6 +144,52 @@ async function main() {
       '跨越并行区域边界目标被拒绝',
       crossBody.ok === false && crossBody.code === 'CROSS_REGION_TARGET' && crossBody.eventIndex === 0
     );
+
+    // 替换预演：FIRE→RESET 首步即分歧，基线证据保留
+    const preview = await fetch(`${base}/api/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, events: ['FIRE', 'RESET'], eventIndex: 0, replacementEvent: 'RESET' })
+    });
+    const previewBody = await preview.json();
+    check('POST /api/preview 成功', previewBody.ok === true && previewBody.stage === 'PREVIEW');
+    check(
+      '替换序列正确且原序列保留',
+      previewBody.ok &&
+        previewBody.baselineSequence.join() === 'FIRE,RESET' &&
+        previewBody.replacedSequence.join() === 'RESET,RESET' &&
+        previewBody.replacement.from === 'FIRE' &&
+        previewBody.replacement.to === 'RESET'
+    );
+    check(
+      'FIRE→RESET 首步出现配置分歧',
+      previewBody.ok &&
+        previewBody.comparison.firstDivergenceIndex === 0 &&
+        previewBody.comparison.rows[0].baseline.selected.length === 2 &&
+        previewBody.comparison.rows[0].preview.selected.join() === 'tr_root_reset' &&
+        previewBody.comparison.rows[0].sameConfiguration === false
+    );
+    check(
+      '预演基线与普通回放逐字段一致',
+      previewBody.ok && JSON.stringify(previewBody.baseline) === JSON.stringify(resetBody)
+    );
+
+    // 未声明替代事件：在替换位置拒绝，对照在首个失败事件终止
+    const badPreview = await fetch(`${base}/api/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, events: ['FIRE', 'RESET'], eventIndex: 0, replacementEvent: 'NOPE' })
+    });
+    const badBody = await badPreview.json();
+    check(
+      '未声明替代事件在替换点拒绝且不伪造后续步骤',
+      badBody.ok === true &&
+        badBody.comparison.terminatedReason === 'PREVIEW_REJECTED' &&
+        badBody.comparison.terminalEventIndex === 0 &&
+        badBody.comparison.rows.length === 1 &&
+        badBody.comparison.rows[0].preview.code === 'UNKNOWN_EVENT' &&
+        badBody.comparison.rows[0].baseline.ok === true
+    );
   } catch (e) {
     failures++;
     console.error('[smoke] 异常:', e);
